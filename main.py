@@ -3,7 +3,7 @@ import time
 from playwright.sync_api import sync_playwright
 
 # --- CONFIGURATION ---
-SOURCE_URL = "https://www.canaraengineering.in/s-sports"
+SOURCE_URL = "https://www.canaraengineering.in/s-achievements"
 LOGIN_URL = "https://canaradashboard.vercel.app/login"
 DASHBOARD_URL = "https://canaradashboard.vercel.app/dashboard/buzz"
 USERNAME = "githubcec@canaraengineering.in"
@@ -21,20 +21,20 @@ def run():
         page = context.new_page()
 
         # ==========================================
-        # PART 1: ROBUST SCRAPING
+        # PART 1: ROBUST SCRAPING (LIGHTBOX MODALS)
         # ==========================================
         print(f"Navigating to {SOURCE_URL}...")
         try:
             page.goto(SOURCE_URL, timeout=60000, wait_until="domcontentloaded")
-            # Wait for the main list to actually appear
-            page.wait_for_selector("text=Read More", timeout=15000)
+            # Wait for the images to appear
+            page.wait_for_selector(".example-image-link", timeout=15000)
         except Exception as e:
             print(f"Initial navigation warning: {e}. Retrying...")
             page.goto(SOURCE_URL, timeout=60000, wait_until="domcontentloaded")
 
-        # Find 'Read More' links
-        read_more_elements = page.get_by_text("Read More")
-        count = read_more_elements.count()
+        # Find all modal trigger images
+        modal_triggers = page.locator(".example-image-link")
+        count = modal_triggers.count()
         print(f"Found {count} events.")
 
         if count == 0:
@@ -43,88 +43,62 @@ def run():
 
         all_events = []
 
-        # Iterate through all events in REVERSE order
+        # Iterate through all events (Handling Modals in Same Page)
+        # Using reverse order as requested in previous logic, though not strictly necessary
         for i in range(count - 1, -1, -1):
             print(f"\n--- Processing Event {i+1}/{count} (Reverse Order) ---")
             
-            detail_page = None
             try:
-                # 1. Click "Read More" and handle the new tab
-                # We re-query the button inside the loop to avoid "stale element" errors
-                current_button = page.get_by_text("Read More").nth(i)
+                # 1. Click the image to open the modal
+                img_link = modal_triggers.nth(i)
+                img_link.scroll_into_view_if_needed()
+                img_link.click()
                 
-                with context.expect_page(timeout=20000) as new_page_info:
-                    current_button.click()
-                
-                detail_page = new_page_info.value
-                
-                # --- FIX: WAIT FOR DATA TO LOAD ---
-                print("Waiting for data to load...")
-                
-                # A. Wait for network connections to finish (fixes empty data from APIs)
+                # 2. Wait for Modal Content
+                # Wait for the Lightbox image and caption to be visible
                 try:
-                    detail_page.wait_for_load_state("networkidle", timeout=6000)
-                except:
-                    pass # Proceed even if network is busy, the selector wait is the real check
+                    page.wait_for_selector(".lb-image", state="visible", timeout=10000)
+                except Exception as e:
+                    print(f"Modal didn't open correctly for index {i}: {e}")
+                    # Try to close if stuck or continue
+                    page.keyboard.press("Escape")
+                    continue
+
+                # 3. Extract Data
+                # Title is hardcoded as per request
+                heading = "Student Acheivements"
                 
-                # B. Wait explicitly for the Title (H3) to be VISIBLE
-                # This ensures we don't scrape while the page is still white/loading
-                detail_page.wait_for_selector("h3", state="visible", timeout=10000)
-                
-                # C. Extract Data
-                heading = detail_page.locator("h3").first.inner_text().strip()
-                
-                # Get description (Wait for paragraph)
+                # Description from caption
                 description = ""
-                if detail_page.locator("p").first.is_visible():
-                    description = detail_page.locator("p").first.inner_text().strip()
+                if page.locator(".lb-caption").is_visible():
+                    description = page.locator(".lb-caption").inner_text().strip()
                 
+                # Image Source
+                image_src = ""
+                if page.locator(".lb-image").is_visible():
+                    image_src = page.locator(".lb-image").get_attribute("src")
+
                 print(f"Scraped Title: {heading}")
 
-                # D. Robust Image Scraping
-                image_src = None
-                try:
-                    # Wait for image to appear
-                    detail_page.wait_for_selector("img", timeout=5000)
-                    
-                    # Strategy 1: Look for image in <center> tag (common on this site)
-                    if detail_page.locator("center img").first.is_visible():
-                        image_src = detail_page.locator("center img").first.get_attribute("src")
-                    
-                    # Strategy 2: Look for any image with 'upload' or extension in URL
-                    if not image_src:
-                        imgs = detail_page.locator("img").all()
-                        for img in imgs:
-                            src = img.get_attribute("src")
-                            if src and any(ext in src.lower() for ext in [".jpg", ".png", ".jpeg", "upload"]):
-                                # Filter out logos/icons
-                                if "logo" not in src.lower():
-                                    image_src = src
-                                    break
-                except Exception as e:
-                    print(f"Image finding warning: {e}")
-
-                # E. Fix Relative URLs
+                # 4. Fix Relative URLs
                 if image_src and not image_src.startswith("http"):
                     image_src = "https://www.canaraengineering.in/" + image_src.lstrip("/")
 
-                # F. Download Image
+                # 5. Download Image
                 local_image_path = None
                 if image_src:
                     local_image_path = os.path.abspath(os.path.join(DOWNLOAD_DIR, f"event_{i}.jpg"))
                     try:
                         # Use Playwright's request context to download
-                        response = detail_page.request.get(image_src, timeout=10000)
+                        response = page.request.get(image_src, timeout=10000)
                         if response.status == 200:
                             with open(local_image_path, 'wb') as f:
+                                # Write binary content
                                 f.write(response.body())
                             print("Image downloaded successfully.")
                         else:
-                            print(f"Image download failed (Status {response.status}). Trying screenshot...")
-                            # Fallback: Screenshot the image element
-                            img_el = detail_page.locator("center img").first
-                            if img_el.is_visible():
-                                img_el.screenshot(path=local_image_path)
+                            print(f"Image download failed (Status {response.status}).")
+                            local_image_path = None
                     except Exception as e:
                         print(f"Image download error: {e}")
                         local_image_path = None
@@ -136,21 +110,38 @@ def run():
                     "image_path": local_image_path
                 })
 
-                detail_page.close()
-                page.bring_to_front()
+                # 6. Close the Modal
+                # Click the close button
+                close_btn = page.locator(".lb-close")
+                if close_btn.is_visible():
+                    close_btn.click()
+                else:
+                    # Fallback: Press Escape
+                    page.keyboard.press("Escape")
                 
+                # Wait for modal to close (image to disappear)
+                try:
+                    page.locator(".lb-image").wait_for(state="hidden", timeout=5000)
+                except:
+                    pass
+                
+                time.sleep(0.5) # Brief pause before next iteration
+
             except Exception as e:
                 print(f"Error scraping event {i+1}: {e}")
-                if detail_page:
-                    try: detail_page.close()
-                    except: pass
-                page.bring_to_front()
+                # IDK, try to escape to reset state
+                page.keyboard.press("Escape")
 
         print(f"\nScraping Complete. Collected {len(all_events)} events.")
         
         if not all_events:
             print("No events collected. Exiting.")
             return
+
+        print(f"\nScraping Complete. Collected {len(all_events)} events.")
+        
+        if not all_events:
+            print("No events collected. Exiting.")
 
         # ==========================================
         # PART 2: AUTOMATION LOGIN
