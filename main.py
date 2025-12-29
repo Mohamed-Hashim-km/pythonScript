@@ -13,6 +13,7 @@ DOWNLOAD_DIR = "webscraping"
 if not os.path.exists(DOWNLOAD_DIR):
     os.makedirs(DOWNLOAD_DIR)
 
+
 def run():
     with sync_playwright() as p:
         # Launch browser
